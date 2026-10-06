@@ -149,10 +149,10 @@ Keep checks light. Run each one and record what happened:
 
 ## Handover
 
-When finished, fill in this section in the story file:
+- **Files created:** `pyproject.toml`, `uv.lock`, `.env.example`, `.gitignore`, `src/building_with_rag/__init__.py`, `config.py`, `models.py`, `registry.py`, `app.py`, `tests/test_app.py`. `README.md` fixed (was UTF-16, blocked build).
+- **Commands run:** `uv lock` — resolved 34 packages, ok. `uv run ruff`/`uv run pytest` — blocked: Windows Application Control denies execution of any venv's `python.exe` (os error 4551), confirmed across 3 venv locations. Not run; developer to run locally.
+- **Open WebUI result:** not run this session (blocked on venv issue above).
+- **Architecture approval:** approved by user (ai.team.subscriptions@gmail.com) in chat, 2026-10-06.
+- **Notes for Story 1.2+:** contracts in `models.py`, dispatch in `registry.run_pattern`, endpoints in `app.py` — reuse unchanged.
 
-- **Files created:** the exact list.
-- **Commands actually run:** the exact commands, with a one-line result each.
-- **Open WebUI result:** what the smoke check showed, or the exact setup output if it failed.
-- **Architecture approval:** who approved `docs/architecture.md` and when.
-- **Notes for Story 1.2 onward:** contracts and names that later stories must reuse unchanged.
+Dev: run `uv run ruff check . && uv run pytest -q` once venv execution is unblocked.
