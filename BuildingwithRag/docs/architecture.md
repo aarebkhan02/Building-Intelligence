@@ -43,9 +43,26 @@ One FastAPI application. Open WebUI (trainer-supplied, separate process) is the 
 ## Endpoints
 
 - `GET /healthz`: safe status only.
-- `POST /v1/query`: `QueryRequest` → `run_pattern` → `QueryResult` (owns diagnostics).
+- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic` is real (see Semantic retrieval); other modes go through `run_pattern` and return `not_implemented`.
 - `GET /v1/models`: the six model IDs.
-- `POST /v1/chat/completions`: maps model → same `QueryRequest` and `run_pattern`; server sets `caller_id` and `generate_answer`; JSON or SSE ending `[DONE]`; OpenAI-style error envelope.
+- `POST /v1/chat/completions`: maps model → same `QueryRequest` and `run_pattern`; server sets `caller_id` and `generate_answer`; all modes (including `rag-semantic`) still return the placeholder until answer generation; JSON or SSE ending `[DONE]`; OpenAI-style error envelope.
+
+## Semantic retrieval (Story 2.3)
+
+Flow: validate → scope filters → embed query → `$vectorSearch` → resolve chunk/section → `QueryResult`.
+
+- Validation: question trimmed (1–4,000); `limit` 1–20; `SemanticFilters` forbids unknown fields and accepts only known `act`/`status`/`access_level` strings. `caller_id` must be omitted or equal `WEBUI_DEMO_CALLER_ID`; `required_acts` and `chapter` are rejected (422).
+- Scope: server fixes `access_level=["public"]`; caller lists only narrow it. Filters go inside `$vectorSearch.filter`.
+- Query: raw question embedded with `voyage-3.5`, `input_type="query"`; `numCandidates = min(200, max(50, 10 × limit))`. Chunks (not de-duplicated sections) return in database score order; each is resolved via `chunks` and `sections`. Unresolvable hits are omitted and counted in `trace.unresolved_hits`.
+- Outcomes: `ok` (passages), `no_results` (HTTP 200; filters match nothing). No score cutoff; scores rank similarity only. Failures: 503 `retrieval_not_ready` (missing credentials, index missing/not ready, empty or mismatched embeddings), 502 `retrieval_upstream_error` (Voyage/MongoDB error).
+- `generate_answer` is accepted but ignored (`generation` null; noted in `trace.ignored`). `/v1/chat/completions` still returns the placeholder.
+- Added optional `RetrievedChunk` fields: `chunk_index`, `act_label`, `status`, `chapter`, `chapter_title`, `section_number`, `source_pdf`, `source_sha256`, `needs_review`.
+
+Diagnostic (text truncated):
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft?", "pattern": "semantic", "limit": 3}'   | jq '{status, trace, results: [.results[] | {chunk_id, section_id, act, heading, score, text: .text[:80]}]}'
+```
 
 ## Environment notes
 

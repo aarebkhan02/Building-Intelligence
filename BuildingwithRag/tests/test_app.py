@@ -16,11 +16,11 @@ def test_healthz_ok():
 def test_query_not_implemented():
     response = client.post(
         "/v1/query",
-        json={"question": "What is BNS section 103?", "pattern": "semantic"},
+        json={"question": "What is BNS section 103?", "pattern": "hybrid"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["pattern"] == "semantic"
+    assert body["pattern"] == "hybrid"
     assert body["status"] == "not_implemented"
     assert body["results"] == []
 

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from building_with_rag.config import get_settings
 from building_with_rag.models import ChatCompletionRequest, QueryRequest, QueryResult
 from building_with_rag.registry import MODE_BY_MODEL_ID, MODEL_ID_BY_MODE, run_pattern
+from building_with_rag.retrieval import semantic
 
 app = FastAPI(title="building-with-rag", version="0.1.0")
 
@@ -24,8 +25,19 @@ def healthz() -> dict[str, str]:
 
 
 @app.post("/v1/query", response_model=QueryResult)
-def query(request: QueryRequest) -> QueryResult:
-    return run_pattern(request)
+def query(request: QueryRequest) -> QueryResult | JSONResponse:
+    if request.pattern != "semantic":
+        return run_pattern(request)
+    problems = semantic.validate_scope(request)
+    if problems:
+        raise HTTPException(status_code=422, detail=" ".join(problems))
+    try:
+        return semantic.run_semantic(request)
+    except semantic.RetrievalError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": {"code": exc.code, "message": exc.message}},
+        )
 
 
 @app.get("/v1/models")

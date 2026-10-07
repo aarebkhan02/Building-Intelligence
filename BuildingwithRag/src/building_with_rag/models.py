@@ -9,17 +9,42 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+from building_with_rag.ingestion import mongodb_schema as schema
 
 
 class SemanticFilters(BaseModel):
+    """Plain string lists from known sets only; operators and unknown fields are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
     act: list[str] = Field(default_factory=list)
     status: list[str] = Field(default_factory=list)
     access_level: list[str] = Field(default_factory=list)
 
+    @field_validator("act")
+    @classmethod
+    def _check_act(cls, values: list[str]) -> list[str]:
+        return [schema.validate_act(v) for v in values]
+
+    @field_validator("status")
+    @classmethod
+    def _check_status(cls, values: list[str]) -> list[str]:
+        return [schema.validate_status(v) for v in values]
+
+    @field_validator("access_level")
+    @classmethod
+    def _check_access_level(cls, values: list[str]) -> list[str]:
+        return [schema.validate_access_level(v) for v in values]
+
 
 class QueryRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=4000)
+    question: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)
+    ]
     pattern: str
     caller_id: str | None = None
     filters: SemanticFilters | None = None
@@ -47,6 +72,16 @@ class RetrievedChunk(BaseModel):
     fused_rank: int | None = None
     rerank_score: float | None = None
     rerank_rank: int | None = None
+    # Source details added in Story 2.3 (optional; absent means unknown, never guessed).
+    chunk_index: int | None = None
+    act_label: str | None = None
+    status: str | None = None
+    chapter: str | None = None
+    chapter_title: str | None = None
+    section_number: int | str | None = None
+    source_pdf: str | None = None
+    source_sha256: str | None = None
+    needs_review: bool | None = None
 
 
 class OmittedCandidate(BaseModel):
