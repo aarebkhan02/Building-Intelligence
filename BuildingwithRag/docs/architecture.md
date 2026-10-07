@@ -55,7 +55,7 @@ Flow: validate → scope filters → embed query → `$vectorSearch` → resolve
 - Scope: server fixes `access_level=["public"]`; caller lists only narrow it. Filters go inside `$vectorSearch.filter`.
 - Query: raw question embedded with `voyage-3.5`, `input_type="query"`; `numCandidates = min(200, max(50, 10 × limit))`. Chunks (not de-duplicated sections) return in database score order; each is resolved via `chunks` and `sections`. Unresolvable hits are omitted and counted in `trace.unresolved_hits`.
 - Outcomes: `ok` (passages), `no_results` (HTTP 200; filters match nothing). No score cutoff; scores rank similarity only. Failures: 503 `retrieval_not_ready` (missing credentials, index missing/not ready, empty or mismatched embeddings), 502 `retrieval_upstream_error` (Voyage/MongoDB error).
-- `generate_answer` is accepted but ignored (`generation` null; noted in `trace.ignored`). `/v1/chat/completions` still returns the placeholder.
+- `generate_answer` triggers answer generation (see Context and answer boundaries); omitted, `generation` stays null. `/v1/chat/completions` still returns the placeholder.
 - Added optional `RetrievedChunk` fields: `chunk_index`, `act_label`, `status`, `chapter`, `chapter_title`, `section_number`, `source_pdf`, `source_sha256`, `needs_review`.
 
 Diagnostic (text truncated):
@@ -63,6 +63,15 @@ Diagnostic (text truncated):
 ```bash
 curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft?", "pattern": "semantic", "limit": 3}'   | jq '{status, trace, results: [.results[] | {chunk_id, section_id, act, heading, score, text: .text[:80]}]}'
 ```
+
+## Context and answer boundaries (Story 3.1)
+
+Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12,000 chars, none cut) → one `POST {GENERATION_API_BASE_URL}/chat/completions` (`temperature: 0`, 30 s, no retry) → strict JSON parse → resolved citations.
+
+- Outcomes in `generation.outcome`: `answered` (non-empty `text`, claims each citing supplied labels, `citations`, `supporting_passages`), `insufficient_evidence` (no results or the model says so; no model call when empty), `unavailable` (missing settings, timeout, connection error, non-2xx), `malformed` (non-JSON, unknown label, missing claims; no repair or retry). All return HTTP 200 with retrieval `results` intact; `status` stays the retrieval status.
+- Added optional `GenerationResult` fields: `text`, structured `claims` (`{text, evidence_labels}`) and `citations` (`{label, chunk_id, section_id, act, heading, chapter, section_number, source_pdf}`); existing fields kept.
+- Evidence is untrusted source text, never instructions. No legal-applicability claims beyond the supplied BNS/IPC documents. `generation.trace` holds label→`chunk_id`, counts, chars, latency, reason; no prompts or secrets.
+- Chat and streaming stay placeholders until Story 3.2.
 
 ## Environment notes
 

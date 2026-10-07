@@ -165,9 +165,6 @@ def run_semantic(request: QueryRequest) -> QueryResult:
     filters = effective_filters(request)
     limit = request.limit
     candidates = num_candidates(limit)
-    ignored = []
-    if request.generate_answer:
-        ignored.append("generate_answer: no answer is generated in semantic retrieval.")
     trace: dict[str, Any] = {
         "mode": "semantic",
         "query": request.question,
@@ -182,7 +179,6 @@ def run_semantic(request: QueryRequest) -> QueryResult:
         "filters": filters,
         "caller_id": settings.webui_demo_caller_id,
         "result_count": 0,
-        "ignored": ignored,
         "unresolved_hits": 0,
     }
 

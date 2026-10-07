@@ -103,11 +103,28 @@ class StructuredSignals(BaseModel):
     chapter: str | None = None
 
 
+class Claim(BaseModel):
+    text: str
+    evidence_labels: list[str] = Field(default_factory=list)
+
+
+class Citation(BaseModel):
+    label: str
+    chunk_id: str
+    section_id: str
+    act: str
+    heading: str | None = None
+    chapter: str | None = None
+    section_number: int | str | None = None
+    source_pdf: str | None = None
+
+
 class GenerationResult(BaseModel):
     outcome: Literal["answered", "insufficient_evidence", "unavailable", "malformed"]
+    text: str = ""
     answer: str | None = None
-    claims: list[str] = Field(default_factory=list)
-    citations: list[str] = Field(default_factory=list)
+    claims: list[Claim | str] = Field(default_factory=list)
+    citations: list[Citation | str] = Field(default_factory=list)
     supporting_passages: list[RetrievedChunk] = Field(default_factory=list)
     provider: str | None = None
     model: str | None = None

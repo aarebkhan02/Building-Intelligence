@@ -11,9 +11,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from building_with_rag.config import get_settings
+from building_with_rag.generation.answer import generate_answer
 from building_with_rag.models import ChatCompletionRequest, QueryRequest, QueryResult
 from building_with_rag.registry import MODE_BY_MODEL_ID, MODEL_ID_BY_MODE, run_pattern
 from building_with_rag.retrieval import semantic
+
+_OUTCOME_NOTES = {
+    "answered": "Answer generated from the cited passages.",
+    "insufficient_evidence": "The retrieved passages do not support an answer.",
+    "unavailable": "Answer generation is unavailable; retrieved passages are still returned.",
+    "malformed": "The model reply was invalid and was discarded; passages are still returned.",
+}
 
 app = FastAPI(title="building-with-rag", version="0.1.0")
 
@@ -32,12 +40,16 @@ def query(request: QueryRequest) -> QueryResult | JSONResponse:
     if problems:
         raise HTTPException(status_code=422, detail=" ".join(problems))
     try:
-        return semantic.run_semantic(request)
+        result = semantic.run_semantic(request)
     except semantic.RetrievalError as exc:
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": {"code": exc.code, "message": exc.message}},
         )
+    if request.generate_answer:
+        result.generation = generate_answer(request.question, result)
+        result.message = f"{result.message} {_OUTCOME_NOTES[result.generation.outcome]}"
+    return result
 
 
 @app.get("/v1/models")

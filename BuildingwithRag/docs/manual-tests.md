@@ -216,3 +216,35 @@ Expected: 422. Also 422: unknown filter field, `limit` 21, foreign `caller_id`, 
 ### Missing Voyage key (failure)
 
 Start the API with `VOYAGE_API_KEY=` empty. Expected: `/healthz` still `ok`; semantic query returns 503 `retrieval_not_ready`, not `no_results`.
+
+## Story 3.1 — Grounded Answer Generation
+
+What it adds: `generate_answer: true` on a semantic `/v1/query` returns `generation` (outcome, answer, claims, citations) built only from the retrieved passages. Chat stays a placeholder.
+
+Prerequisite: Story 2.3 complete, `.env` has `GENERATION_API_BASE_URL` and `GENERATION_API_KEY` (trainer-supplied). Output truncated; never print full passages.
+
+### Answerable question
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft under the BNS?", "pattern": "semantic", "limit": 5, "generate_answer": true}'   | jq '{status, g: (.generation | {outcome, model, provider, context_outcome, text: (.text[:300]), claims: [.claims[] | {t: .text[:80], e: .evidence_labels}], citations: [.citations[] | {label, chunk_id, section_id, act, heading}], trace}), ctx: [.results[] | {chunk_id, section_id, act, score}]}'
+```
+
+Expected: `outcome` `answered`, non-empty `text`, each claim has labels, every citation `chunk_id` is in `ctx` and `trace.labels`, `section_id` prefix matches `act`.
+
+### Unsupported question
+
+Same command with `"question": "What is the GST rate on restaurant services?"`. Expected: `insufficient_evidence`, empty `text`, no claims or citations, `results` still present.
+
+### Generation unavailable (failure)
+
+Start the API with `GENERATION_API_KEY=` empty and repeat the first request. Expected: HTTP 200, `outcome` `unavailable`, empty `text`, `results` present.
+
+### Without `generate_answer`
+
+Omit the flag. Expected: `generation` is `null`, no model call.
+
+### Parser tests
+
+```bash
+uv run pytest tests/test_grounded_answer.py
+```
