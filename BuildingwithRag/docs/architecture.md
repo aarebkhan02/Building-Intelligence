@@ -43,9 +43,9 @@ One FastAPI application. Open WebUI (trainer-supplied, separate process) is the 
 ## Endpoints
 
 - `GET /healthz`: safe status only.
-- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic` is real (see Semantic retrieval); other modes go through `run_pattern` and return `not_implemented`.
+- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic` and `hybrid` are real (see Semantic retrieval, Hybrid retrieval); other modes go through `run_pattern` and return `not_implemented`.
 - `GET /v1/models`: the six model IDs.
-- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic` is real and streamed; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
+- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic` and `rag-hybrid` are real and streamed; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
 
 ## Semantic retrieval (Story 2.3)
 
@@ -75,7 +75,7 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 
 ## Streamed answers and confidence (Story 3.2)
 
-- Shared path: `pipeline.retrieve` (semantic → `run_semantic`, else `run_pattern`; errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
+- Shared path: `pipeline.retrieve` (semantic → `run_semantic`, hybrid → `run_hybrid`, else `run_pattern`; real modes are `pipeline.REAL_PATTERNS`; errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
 - Event flow: model streams text with inline labels (`[E1]`); first characters are buffered so `INSUFFICIENT_EVIDENCE: <reason>` is never streamed. Each attempt starts with a `DRAFT — checking evidence` notice.
 - `MAX_ATTEMPTS = 2` (initial + one retry, retry prompt carries the plain-language issues). Checks per attempt, in order: `citation_labels` (all cited labels supplied), `claim_cited` (every sentence/bullet cited, text non-empty), `support` (one non-streamed validator call, strict JSON, per claim; skipped when an earlier check already failed). Invalid citations are never rewritten.
 - New `GenerationResult` fields: `confidence` (`high` | `low` | absent), `issues` (`attempt`, `check`, `detail`; all attempts), `attempts` (`attempt`, `status` passed|failed|unjudged, `chars`, `latency_ms`), `draft_answer` (last unpassed text), `low_confidence_reason`.
@@ -84,6 +84,19 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 - Failure after text began: final line `Answer generation unavailable — the text above is an unchecked draft.`, then stop + `[DONE]` (HTTP 200).
 - `CAPSTONE_API_KEY` non-empty → `/v1/chat/completions` requires `Authorization: Bearer <key>` (constant-time compare; 401 `invalid_api_key`). Empty → no check. Other endpoints unchanged.
 - Provider call: `stream: true` SSE via `httpx`, 30 s timeout per call, `temperature: 0`.
+
+## Hybrid retrieval (Story 4.1)
+
+- Selected explicitly (`pattern: "hybrid"` / `rag-hybrid`); no automatic routing or fallback. Same corpus, filters, scope rules (`required_acts`/`chapter`/foreign `caller_id` → 422), context, citations, confidence and streaming as semantic.
+- Keyword route: Atlas Search `$search` with the `text` operator (BM25, `{$meta: "searchScore"}`) on `chunks.text`; filters (`act`, `status`, `access_level`) inside `compound.filter` with `in`. Index `chunk_text_index` on `chunks` (`KEYWORD_INDEX_DEFINITION` in `mongodb_schema.py`: `text` string/`lucene.standard`; `act`, `status`, `access_level` token; `dynamic: false`). Create: `uv run python -m building_with_rag.ingestion.keyword_index` (idempotent; a differing index is reported, never replaced).
+- Keyword route skips chunks under `MIN_KEYWORD_CHARS = 100` characters (`$match` on `$strLenCP`): BM25 favours heading-only stubs (e.g. ipc:405, 29 chars), which crowd out definition text. Semantic route is unfiltered.
+- Semantic route: Story 2.3 `$vectorSearch` with `limit = ROUTE_DEPTH`.
+- Fusion: Reciprocal Rank Fusion over ranks. `ROUTE_DEPTH = max(limit, min(50, max(20, 4 * limit)))`; `fused_score = Σ 1/(RRF_K + rank)`, `RRF_K = 60`, equal weights. Order: `fused_score` desc, `semantic_rank` (missing last), `chunk_id`. Chunks fused by `chunk_id`; top `limit` returned; `fused_rank` is 1-based.
+- `RetrievedChunk` (optional, `None` by default): `semantic_score`, `semantic_rank`, `keyword_score`, `keyword_rank`, `fused_score`, `fused_rank`. In hybrid `score = fused_score`; a route that did not return the chunk leaves its fields `None`. Semantic leaves all six `None`.
+- Trace: `mode`, `query`, `embedding`, `filters`, `caller_id`, `result_count`, `unresolved_hits`, `semantic`, `keyword`, `fusion`, `contribution` (`both`/`semantic_only`/`keyword_only` among returned results). No vectors or secrets.
+- Outcomes: `ok`, `no_results` (both routes empty), 503 `retrieval_not_ready` (credentials, either index missing/not ready, empty embeddings; never degrades to semantic-only), 502 `retrieval_upstream_error`.
+- Limitations: rank-only fusion ignores score magnitude; `text` matches any query term (OR), so long questions pull in common words; section numbers match only when present in chunk `text`; standard analyzer, no stemming or synonyms. Fused score ranks only; it does not prove correctness.
+- Diagnostic: the `jq` command in `docs/manual-tests.md` (Story 4.1).
 
 ## Environment notes
 

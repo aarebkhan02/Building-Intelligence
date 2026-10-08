@@ -48,15 +48,15 @@ def num_candidates(limit: int) -> int:
 
 
 def validate_scope(request: QueryRequest) -> list[str]:
-    """Return rejection messages for fields semantic mode cannot honour."""
+    """Return rejection messages for fields semantic/hybrid mode cannot honour."""
     settings = get_settings()
     problems = []
     if request.caller_id is not None and request.caller_id != settings.webui_demo_caller_id:
         problems.append("caller_id does not match the configured caller.")
     if request.required_acts is not None:
-        problems.append("required_acts is not supported in semantic mode.")
+        problems.append(f"required_acts is not supported in {request.pattern} mode.")
     if request.chapter is not None:
-        problems.append("chapter is not supported in semantic mode.")
+        problems.append(f"chapter is not supported in {request.pattern} mode.")
     return problems
 
 
@@ -102,10 +102,8 @@ def _voyage_client(settings) -> VoyageClient:
     return _voyage
 
 
-def _ensure_ready(db) -> None:
-    global _ready
-    if _ready:
-        return
+def check_vector_ready(db) -> None:
+    """Raise retrieval_not_ready unless vector index and embeddings are usable (no caching)."""
     emb = db[schema.EMBEDDINGS_COLLECTION]
     indexes = emb.list_search_indexes()
     idx = next((i for i in indexes if i.get("name") == schema.VECTOR_INDEX_NAME), None)
@@ -122,7 +120,35 @@ def _ensure_ready(db) -> None:
         or sample.get("dimensions") != schema.EMBEDDING_DIMENSIONS
     ):
         raise _not_ready("Stored embeddings do not match the configured model/dimensions.")
+
+
+def _ensure_ready(db) -> None:
+    global _ready
+    if _ready:
+        return
+    check_vector_ready(db)
     _ready = True
+
+
+def vector_hits(emb, vector: list[float], candidates: int, limit: int, mongo_filter: dict) -> list:
+    """Run $vectorSearch; hits are {chunk_id, score}, best first."""
+    return list(
+        emb.aggregate(
+            [
+                {
+                    "$vectorSearch": {
+                        "index": schema.VECTOR_INDEX_NAME,
+                        "path": "vector",
+                        "queryVector": vector,
+                        "numCandidates": candidates,
+                        "limit": limit,
+                        "filter": mongo_filter,
+                    }
+                },
+                {"$project": {"_id": 0, "chunk_id": 1, "score": {"$meta": "vectorSearchScore"}}},
+            ]
+        )
+    )
 
 
 def _embed_query(settings, question: str) -> list[float]:
@@ -197,29 +223,7 @@ def run_semantic(request: QueryRequest) -> QueryResult:
             )
 
         vector = _embed_query(settings, request.question)
-        hits = list(
-            emb.aggregate(
-                [
-                    {
-                        "$vectorSearch": {
-                            "index": schema.VECTOR_INDEX_NAME,
-                            "path": "vector",
-                            "queryVector": vector,
-                            "numCandidates": candidates,
-                            "limit": limit,
-                            "filter": mongo_filter,
-                        }
-                    },
-                    {
-                        "$project": {
-                            "_id": 0,
-                            "chunk_id": 1,
-                            "score": {"$meta": "vectorSearchScore"},
-                        }
-                    },
-                ]
-            )
-        )
+        hits = vector_hits(emb, vector, candidates, limit, mongo_filter)
         chunks = {
             c["_id"]: c
             for c in db[schema.CHUNKS_COLLECTION].find(

@@ -97,7 +97,7 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
 Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet` (`rag-semantic` is real since Story 3.2).
@@ -107,7 +107,7 @@ Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contai
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -127,7 +127,7 @@ Expected: 404 with an OpenAI-style `error` envelope (`Unknown model 'gpt-4'.`).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
 Expected: 400 with an OpenAI-style `error` envelope (`At least one user message is required.`).
@@ -265,7 +265,7 @@ Prerequisite: Story 3.1 complete; restart the API so it runs the new code (`uv r
    `{"model": "rag-semantic", "stream": false, "messages": [{"role": "user", "content": "What is the punishment for theft under the BNS?"}]}`
    Expected: `choices[0].message.content` starts `DRAFT — checking evidence`, then the answer, then `Evidence check passed — confidence: high` and `Sources:`. Set `"stream": true` to see `data:` chunks ending `data: [DONE]` (Postman shows them after completion).
 4. If `CAPSTONE_API_KEY` is set: add header `Authorization: Bearer <key>` (Authorization tab → Bearer Token). A wrong token returns 401 `invalid_api_key`; unset, no header is needed.
-5. `rag-hybrid` in the chat body, or `"pattern": "hybrid"` on `/v1/query`, still returns `not_implemented`.
+5. `rag-hybrid-reranked` in the chat body, or `"pattern": "hybrid-reranked"` on `/v1/query`, still returns `not_implemented`.
 
 ### Open WebUI
 
@@ -276,3 +276,17 @@ Prerequisite: Story 3.1 complete; restart the API so it runs the new code (`uv r
 5. Provider rate limits (HTTP 429) show `Answer generation unavailable`; wait a minute and ask again.
 
 Offline: `uv run pytest tests/test_streamed_confidence.py`
+
+## Story 4.1 — Hybrid search
+
+Prerequisite: Stories 2.2, 3.2 complete; `uv run python -m building_with_rag.ingestion.keyword_index` ends with `chunk_text_index` queryable; restart the API. Voyage free keys allow about 3 requests/minute: space the calls. Never print passages.
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question":"criminal breach of trust","pattern":"hybrid","limit":5}'   | jq '{status, t: (.trace | {semantic, keyword, fusion, contribution}), r: [.results[] | {section_id, score, sr: .semantic_rank, kr: .keyword_rank, fr: .fused_rank, text: .text[:60]}]}'
+```
+
+1. Expected: `status` `ok`, non-increasing `score` (= `fused_score`), `fr` = position, each result has `sr` and/or `kr`, trace shows both routes, `fusion`, `contribution`.
+2. Add `"generate_answer": true` and compare with `"pattern": "semantic"`: sections, order, and answer may differ; neither mode is better in general.
+3. `rag-hybrid` in chat (Open WebUI or `/v1/chat/completions`) streams the same DRAFT/confidence/Sources behavior as `rag-semantic`.
+4. Keyword index missing or not ready: hybrid returns 503 `retrieval_not_ready` naming the keyword-index command; semantic still returns `ok`.
+5. `hybrid-reranked`, `structured`, `decomposition`, `hyde` still return `not_implemented`.

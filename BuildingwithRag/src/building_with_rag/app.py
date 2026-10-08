@@ -54,7 +54,7 @@ def query(request: QueryRequest) -> QueryResult | JSONResponse:
             status_code=exc.status_code,
             content={"detail": {"code": exc.code, "message": exc.message}},
         )
-    if request.generate_answer and request.pattern == "semantic":
+    if request.generate_answer and request.pattern in pipeline.REAL_PATTERNS:
         result.generation = pipeline.final_of(pipeline.answer_events(request.question, result))
         result.message = f"{result.message} {_note(result.generation)}"
     return result

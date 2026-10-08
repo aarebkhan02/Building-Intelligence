@@ -267,3 +267,22 @@ VECTOR_INDEX_DEFINITION = {
         {"type": "filter", "path": "access_level"},
     ]
 }
+
+
+# ---------------------------------------------------------------------------
+# Atlas Search (keyword) index definition on chunks.text
+# ---------------------------------------------------------------------------
+
+KEYWORD_INDEX_NAME = "chunk_text_index"
+
+KEYWORD_INDEX_DEFINITION = {
+    "mappings": {
+        "dynamic": False,
+        "fields": {
+            "text": {"type": "string", "analyzer": "lucene.standard"},
+            "act": {"type": "token"},
+            "status": {"type": "token"},
+            "access_level": {"type": "token"},
+        },
+    }
+}
