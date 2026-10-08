@@ -130,10 +130,10 @@ class GenerationResult(BaseModel):
     model: str | None = None
     trace: dict[str, Any] = Field(default_factory=dict)
     context_outcome: str | None = None
-    confidence: float | None = None
-    draft_answer: str | None = None
-    issues: list[str] = Field(default_factory=list)
-    attempts: int = 0
+    confidence: Literal["high", "low"] | None = None
+    draft_answer: str = ""
+    issues: list[dict[str, Any]] = Field(default_factory=list)
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
     low_confidence_reason: str | None = None
 
 

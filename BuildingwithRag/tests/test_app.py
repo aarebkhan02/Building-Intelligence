@@ -43,7 +43,7 @@ def test_chat_completions_json():
     response = client.post(
         "/v1/chat/completions",
         json={
-            "model": "rag-semantic",
+            "model": "rag-hybrid",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": False,
         },
@@ -59,7 +59,7 @@ def test_chat_completions_sse():
         "POST",
         "/v1/chat/completions",
         json={
-            "model": "rag-semantic",
+            "model": "rag-hybrid",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": True,
         },

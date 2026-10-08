@@ -97,17 +97,17 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
-Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet`.
+Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet` (`rag-semantic` is real since Story 3.2).
 
 ### Chat completions — streaming
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -120,17 +120,17 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
   -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-Expected: 400 with `"type":"invalid_request_error"`, `"code":"model_not_found"`.
+Expected: 404 with an OpenAI-style `error` envelope (`Unknown model 'gpt-4'.`).
 
 ### Chat completions — no user message (failure)
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-semantic", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-hybrid", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
-Expected: 400 with `"code":"missing_user_message"`.
+Expected: 400 with an OpenAI-style `error` envelope (`At least one user message is required.`).
 
 ## Story 2.1 — Document Ingestion
 
@@ -185,7 +185,7 @@ Expected: stops at step 1 with `MongoDB unavailable: MONGODB_URI is empty. Set i
 
 ## Story 2.3 — Semantic Retrieval
 
-What it adds: `POST /v1/query` with `pattern: "semantic"` embeds the question, runs `$vectorSearch`, and returns ranked passages. Chat for `rag-semantic` stays a placeholder.
+What it adds: `POST /v1/query` with `pattern: "semantic"` embeds the question, runs `$vectorSearch`, and returns ranked passages. Chat for `rag-semantic` was a placeholder until Story 3.2.
 
 Prerequisite: Story 2.2 complete (`vector_index` READY), `.env` has `MONGODB_URI` and `VOYAGE_API_KEY`, API running as in Story 1.1. Output below is truncated; never print full passages.
 
@@ -219,7 +219,7 @@ Start the API with `VOYAGE_API_KEY=` empty. Expected: `/healthz` still `ok`; sem
 
 ## Story 3.1 — Grounded Answer Generation
 
-What it adds: `generate_answer: true` on a semantic `/v1/query` returns `generation` (outcome, answer, claims, citations) built only from the retrieved passages. Chat stays a placeholder.
+What it adds: `generate_answer: true` on a semantic `/v1/query` returns `generation` (outcome, answer, claims, citations) built only from the retrieved passages. Chat streaming arrives in Story 3.2.
 
 Prerequisite: Story 2.3 complete, `.env` has `GENERATION_API_BASE_URL` and `GENERATION_API_KEY` (trainer-supplied). Output truncated; never print full passages.
 
@@ -229,11 +229,11 @@ Prerequisite: Story 2.3 complete, `.env` has `GENERATION_API_BASE_URL` and `GENE
 curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d '{"question": "What is the punishment for theft under the BNS?", "pattern": "semantic", "limit": 5, "generate_answer": true}'   | jq '{status, g: (.generation | {outcome, model, provider, context_outcome, text: (.text[:300]), claims: [.claims[] | {t: .text[:80], e: .evidence_labels}], citations: [.citations[] | {label, chunk_id, section_id, act, heading}], trace}), ctx: [.results[] | {chunk_id, section_id, act, score}]}'
 ```
 
-Expected: `outcome` `answered`, non-empty `text`, each claim has labels, every citation `chunk_id` is in `ctx` and `trace.labels`, `section_id` prefix matches `act`.
+Expected: `outcome` `answered`, `confidence` `high`, non-empty `text`, each claim has labels, every citation `chunk_id` is in `ctx` and `trace.labels`, `section_id` prefix matches `act`.
 
 ### Unsupported question
 
-Same command with `"question": "What is the GST rate on restaurant services?"`. Expected: `insufficient_evidence`, empty `text`, no claims or citations, `results` still present.
+Same command with `"question": "What is the GST rate on restaurant services?"`. Expected: `insufficient_evidence`, empty `text`, no claims or citations, no `confidence`, `results` still present.
 
 ### Generation unavailable (failure)
 
@@ -243,8 +243,36 @@ Start the API with `GENERATION_API_KEY=` empty and repeat the first request. Exp
 
 Omit the flag. Expected: `generation` is `null`, no model call.
 
-### Parser tests
+### Claim and context tests
 
 ```bash
 uv run pytest tests/test_grounded_answer.py
 ```
+
+## Story 3.2 — Streamed Answers with Confidence in Open WebUI
+
+What it adds: `rag-semantic` chat runs the same retrieval + generation path as `/v1/query`, streams the answer, and ends with an evidence-check footer.
+
+Prerequisite: Story 3.1 complete; restart the API so it runs the new code (`uv run uvicorn building_with_rag.app:app --host 127.0.0.1 --port 8000`; an old server on the port keeps the old behavior). Never print passages.
+
+### Postman
+
+1. `POST http://127.0.0.1:8000/v1/query`, Body → raw JSON:
+   `{"question": "What is the punishment for theft under the BNS?", "pattern": "semantic", "limit": 5, "generate_answer": true}`
+   Expected: `generation.outcome` `answered`, `confidence` `high`, `attempts` (status `passed`), `citations`. Low confidence shows `outcome` `malformed`, empty `text`, `confidence` `low`, `draft_answer`, `issues`.
+2. Same request with `"question": "What is the GST rate on restaurant services?"`. Expected: `insufficient_evidence`, no `confidence`, `results` intact.
+3. `POST http://127.0.0.1:8000/v1/chat/completions`, raw JSON:
+   `{"model": "rag-semantic", "stream": false, "messages": [{"role": "user", "content": "What is the punishment for theft under the BNS?"}]}`
+   Expected: `choices[0].message.content` starts `DRAFT — checking evidence`, then the answer, then `Evidence check passed — confidence: high` and `Sources:`. Set `"stream": true` to see `data:` chunks ending `data: [DONE]` (Postman shows them after completion).
+4. If `CAPSTONE_API_KEY` is set: add header `Authorization: Bearer <key>` (Authorization tab → Bearer Token). A wrong token returns 401 `invalid_api_key`; unset, no header is needed.
+5. `rag-hybrid` in the chat body, or `"pattern": "hybrid"` on `/v1/query`, still returns `not_implemented`.
+
+### Open WebUI
+
+1. Admin Settings → Connections → add an OpenAI connection: URL `http://host.docker.internal:8000/v1` (Open WebUI in Docker; use `http://127.0.0.1:8000/v1` if it runs natively), key = `CAPSTONE_API_KEY` (any text if unset). Or use the Pipe: see `open_webui_functions/open-webui-operations.md` (re-paste after changes).
+2. Start a chat with the `rag-semantic` model (or `Building with RAG`) and ask: "What is the punishment for theft under the BNS?" Expected: `DRAFT — checking evidence`, answer with `[E1]` labels, then `Evidence check passed — confidence: high` and `Sources:`.
+3. Ask: "What is the GST rate on restaurant services?" Expected: one insufficient-evidence sentence, no confidence line.
+4. A `Check failed: … Retrying (attempt 2 of 2)…` line, or a closing `DRAFT — low confidence, not the final answer.`, is expected behavior when checks fail; earlier drafts stay visible.
+5. Provider rate limits (HTTP 429) show `Answer generation unavailable`; wait a minute and ask again.
+
+Offline: `uv run pytest tests/test_streamed_confidence.py`
