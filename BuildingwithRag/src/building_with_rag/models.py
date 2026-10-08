@@ -72,6 +72,7 @@ class RetrievedChunk(BaseModel):
     fused_rank: int | None = None
     rerank_score: float | None = None
     rerank_rank: int | None = None
+    omitted_reason: str | None = None
     # Source details added in Story 2.3 (optional; absent means unknown, never guessed).
     chunk_index: int | None = None
     act_label: str | None = None
@@ -145,7 +146,7 @@ class QueryResult(BaseModel):
     results: list[RetrievedChunk] = Field(default_factory=list)
     generation: GenerationResult | None = None
     # Additive fields; default to empty.
-    omitted_candidates: list[OmittedCandidate] = Field(default_factory=list)
+    omitted_candidates: list[RetrievedChunk] = Field(default_factory=list)
     subquestions: list[SubquestionEvidence] = Field(default_factory=list)
     hyde_direct_candidates: list[RetrievedChunk] = Field(default_factory=list)
     hyde_query_candidates: list[RetrievedChunk] = Field(default_factory=list)

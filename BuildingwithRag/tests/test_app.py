@@ -16,11 +16,11 @@ def test_healthz_ok():
 def test_query_not_implemented():
     response = client.post(
         "/v1/query",
-        json={"question": "What is BNS section 103?", "pattern": "hybrid-reranked"},
+        json={"question": "What is BNS section 103?", "pattern": "structured"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["pattern"] == "hybrid-reranked"
+    assert body["pattern"] == "structured"
     assert body["status"] == "not_implemented"
     assert body["results"] == []
 
@@ -43,7 +43,7 @@ def test_chat_completions_json():
     response = client.post(
         "/v1/chat/completions",
         json={
-            "model": "rag-hybrid-reranked",
+            "model": "rag-structured",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": False,
         },
@@ -59,7 +59,7 @@ def test_chat_completions_sse():
         "POST",
         "/v1/chat/completions",
         json={
-            "model": "rag-hybrid-reranked",
+            "model": "rag-structured",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": True,
         },

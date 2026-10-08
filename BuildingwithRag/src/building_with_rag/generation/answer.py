@@ -31,6 +31,9 @@ text and its status say.
 - Say which act (BNS 2023 or IPC 1860) each point comes from.
 - Write a short plain-text answer. End every factual sentence or bullet with the supplied label(s) \
 of the evidence it relies on, like [E1] or [E1][E2]. Use only supplied labels.
+- Start directly with a cited fact: no introduction, no headings, no lines without a label.
+- A short question or bare legal term asks what the evidence says about it (definition, \
+punishment, related provisions). Answer from the evidence; do not refuse because it is brief.
 - If the evidence is missing, unrelated, or conflicting, reply with only \
 `INSUFFICIENT_EVIDENCE: <short reason>` and nothing else."""
 
@@ -49,6 +52,12 @@ _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 
 class _Malformed(Exception):
     pass
+
+
+# Provider rate limits (HTTP 429) are transient: retry briefly before reporting unavailable.
+RATE_LIMIT_RETRIES = 2
+RATE_LIMIT_BACKOFF_SECONDS = 3.0
+RATE_LIMIT_MAX_WAIT_SECONDS = 10.0
 
 
 class _ProviderError(Exception):
@@ -113,6 +122,15 @@ def _url(settings) -> str:
     return f"{settings.generation_api_base_url.strip().rstrip('/')}/chat/completions"
 
 
+def _rate_wait(response, attempt: int) -> float:
+    """Seconds to wait after HTTP 429: Retry-After when sane, else a short linear backoff."""
+    try:
+        wait = float(response.headers.get("retry-after", ""))
+    except ValueError:
+        wait = RATE_LIMIT_BACKOFF_SECONDS * (attempt + 1)
+    return min(max(wait, 1.0), RATE_LIMIT_MAX_WAIT_SECONDS)
+
+
 def _stream_provider(settings, messages: list[dict[str, str]]) -> Iterator[str]:
     body = {
         "model": settings.generation_model_name,
@@ -121,35 +139,53 @@ def _stream_provider(settings, messages: list[dict[str, str]]) -> Iterator[str]:
         "messages": messages,
     }
     try:
-        with httpx.stream(
-            "POST", _url(settings), json=body, headers=_headers(settings), timeout=TIMEOUT_SECONDS
-        ) as response:
-            if not response.is_success:
-                raise _ProviderError(f"provider returned HTTP {response.status_code}")
-            for line in response.iter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    delta = json.loads(data)["choices"][0]["delta"].get("content")
-                except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-                    continue
-                if isinstance(delta, str) and delta:
-                    yield delta
+        for attempt in range(RATE_LIMIT_RETRIES + 1):
+            with httpx.stream(
+                "POST", _url(settings), json=body, headers=_headers(settings),
+                timeout=TIMEOUT_SECONDS,
+            ) as response:
+                if response.status_code == 429 and attempt < RATE_LIMIT_RETRIES:
+                    wait = _rate_wait(response, attempt)
+                else:
+                    wait = None
+                    if not response.is_success:
+                        raise _ProviderError(f"provider returned HTTP {response.status_code}")
+                    yield from _read_stream(response)
+            if wait is None:
+                return
+            time.sleep(wait)
     except httpx.HTTPError as exc:
         raise _ProviderError(f"request failed ({type(exc).__name__})") from None
+
+
+def _read_stream(response) -> Iterator[str]:
+    for line in response.iter_lines():
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            delta = json.loads(data)["choices"][0]["delta"].get("content")
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            continue
+        if isinstance(delta, str) and delta:
+            yield delta
 
 
 def _complete(settings, messages: list[dict[str, str]]) -> str:
     body = {"model": settings.generation_model_name, "temperature": 0, "messages": messages}
-    try:
-        response = httpx.post(
-            _url(settings), json=body, headers=_headers(settings), timeout=TIMEOUT_SECONDS
-        )
-    except httpx.HTTPError as exc:
-        raise _ProviderError(f"request failed ({type(exc).__name__})") from None
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            response = httpx.post(
+                _url(settings), json=body, headers=_headers(settings), timeout=TIMEOUT_SECONDS
+            )
+        except httpx.HTTPError as exc:
+            raise _ProviderError(f"request failed ({type(exc).__name__})") from None
+        if response.status_code == 429 and attempt < RATE_LIMIT_RETRIES:
+            time.sleep(_rate_wait(response, attempt))
+            continue
+        break
     if not response.is_success:
         raise _ProviderError(f"provider returned HTTP {response.status_code}")
     try:

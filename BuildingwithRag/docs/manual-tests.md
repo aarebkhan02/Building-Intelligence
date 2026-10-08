@@ -37,20 +37,20 @@ Expected (Story 2.3, needs ingested data and keys): `"status":"ok"`, up to 3 `re
 ```bash
 curl -s http://127.0.0.1:8000/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is theft?", "pattern": "hybrid"}'
+  -d '{"question": "What is theft?", "pattern": "hybrid", "limit": 3}'
 ```
 
-Expected: `"status":"not_implemented"`, message references `hybrid`.
+Expected (Story 4.1, needs keyword index): `"status":"ok"`, up to 3 `results` in non-increasing fused `score`. Not `not_implemented`.
 
 ### Query — hybrid-reranked
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "What is theft?", "pattern": "hybrid-reranked"}'
+  -d '{"question": "What is theft?", "pattern": "hybrid-reranked", "limit": 3}'
 ```
 
-Expected: `"status":"not_implemented"`, message references `hybrid-reranked`.
+Expected (Story 4.2, needs `RERANK_API_KEY`): `"status":"ok"`, up to 3 `results` ordered by `rerank_rank`, `omitted_candidates` for the rest.
 
 ### Query — structured
 
@@ -97,7 +97,7 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-structured", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
 Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet` (`rag-semantic` is real since Story 3.2).
@@ -107,7 +107,7 @@ Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contai
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-structured", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -127,7 +127,7 @@ Expected: 404 with an OpenAI-style `error` envelope (`Unknown model 'gpt-4'.`).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-hybrid-reranked", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-structured", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
 Expected: 400 with an OpenAI-style `error` envelope (`At least one user message is required.`).
@@ -265,7 +265,7 @@ Prerequisite: Story 3.1 complete; restart the API so it runs the new code (`uv r
    `{"model": "rag-semantic", "stream": false, "messages": [{"role": "user", "content": "What is the punishment for theft under the BNS?"}]}`
    Expected: `choices[0].message.content` starts `DRAFT — checking evidence`, then the answer, then `Evidence check passed — confidence: high` and `Sources:`. Set `"stream": true` to see `data:` chunks ending `data: [DONE]` (Postman shows them after completion).
 4. If `CAPSTONE_API_KEY` is set: add header `Authorization: Bearer <key>` (Authorization tab → Bearer Token). A wrong token returns 401 `invalid_api_key`; unset, no header is needed.
-5. `rag-hybrid-reranked` in the chat body, or `"pattern": "hybrid-reranked"` on `/v1/query`, still returns `not_implemented`.
+5. `rag-structured` in the chat body, or `"pattern": "structured"` on `/v1/query`, still returns `not_implemented`.
 
 ### Open WebUI
 
@@ -289,4 +289,20 @@ curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d 
 2. Add `"generate_answer": true` and compare with `"pattern": "semantic"`: sections, order, and answer may differ; neither mode is better in general.
 3. `rag-hybrid` in chat (Open WebUI or `/v1/chat/completions`) streams the same DRAFT/confidence/Sources behavior as `rag-semantic`.
 4. Keyword index missing or not ready: hybrid returns 503 `retrieval_not_ready` naming the keyword-index command; semantic still returns `ok`.
-5. `hybrid-reranked`, `structured`, `decomposition`, `hyde` still return `not_implemented`.
+5. `structured`, `decomposition`, `hyde` still return `not_implemented`.
+
+## Story 4.2 — Hybrid re-ranking
+
+Prerequisite: Story 4.1 complete and `RERANK_API_KEY` set in `.env`; restart the API. Space calls about 25 s apart (Voyage free tier). Never print passages or keys.
+
+```bash
+curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
+  -d '{"question":"What is the difference between culpable homicide and murder?","pattern":"hybrid-reranked","limit":5}' \
+  | jq '{status, t: .trace.rerank, r: [(.results[]|.+{kept:true}), (.omitted_candidates[]|.+{kept:false})] | map({section_id, kept, fr: .fused_rank, fs: .fused_score, rr: .rerank_rank, rs: .rerank_score, why: .omitted_reason, text: .text[:50]}) | sort_by(.fr)}'
+```
+
+1. Expected: `status` `ok`; `results` ordered by `rerank_rank` with `score` = `rerank_score`; each keeps `fused_rank`/`fused_score`; `omitted_candidates` carry `omitted_reason` (`not_sent_to_reranker` has no rerank fields, `below_return_limit` has them).
+2. Add `"generate_answer": true` and compare with `"pattern": "hybrid"`: order, sources and answer may differ; neither mode is better in general.
+3. `rag-hybrid-reranked` in chat streams the same DRAFT/confidence/Sources behavior; cited chunks come from `results` only.
+4. `RERANK_API_KEY=` empty and API restarted: `hybrid-reranked` returns 503 `retrieval_not_ready` (chat: OpenAI-style error), while `hybrid` still returns `ok`.
+5. `structured`, `decomposition`, `hyde` still return `not_implemented`.

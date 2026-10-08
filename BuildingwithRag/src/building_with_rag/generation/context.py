@@ -1,4 +1,4 @@
-"""Bounded, labelled evidence context built from a semantic or hybrid retrieval result."""
+"""Bounded, labelled evidence context built from a retrieval result (any real mode)."""
 
 from __future__ import annotations
 

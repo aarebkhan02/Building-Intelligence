@@ -10,23 +10,30 @@ from building_with_rag.generation import answer
 from building_with_rag.generation.answer import Event
 from building_with_rag.models import GenerationResult, QueryRequest, QueryResult
 from building_with_rag.registry import run_pattern
-from building_with_rag.retrieval import hybrid, semantic
+from building_with_rag.retrieval import hybrid, rerank, semantic
 
-REAL_PATTERNS = frozenset({"semantic", "hybrid"})
+REAL_PATTERNS = frozenset({"semantic", "hybrid", "hybrid-reranked"})
+_RETRIEVERS = {
+    "semantic": semantic.run_semantic,
+    "hybrid": hybrid.run_hybrid,
+    "hybrid-reranked": rerank.run_hybrid_reranked,
+}
 UNAVAILABLE_DRAFT = "Answer generation unavailable — the text above is an unchecked draft."
 UNAVAILABLE = "Answer generation unavailable."
 UNJUDGED_DRAFT = "DRAFT — could not be checked; not the final answer."
 
 
 def retrieve(request: QueryRequest) -> QueryResult:
-    """Semantic/hybrid → real retrieval; other modes → run_pattern. Raises before any streaming."""
+    """Semantic/hybrid/hybrid-reranked → real retrieval; other modes → run_pattern.
+
+    Errors raise before any streaming.
+    """
     if request.pattern not in REAL_PATTERNS:
         return run_pattern(request)
     problems = semantic.validate_scope(request)
     if problems:
         raise HTTPException(status_code=422, detail=" ".join(problems))
-    run = hybrid.run_hybrid if request.pattern == "hybrid" else semantic.run_semantic
-    return run(request)  # may raise semantic.RetrievalError
+    return _RETRIEVERS[request.pattern](request)  # may raise semantic.RetrievalError
 
 
 def answer_events(question: str, retrieval: QueryResult) -> Iterator[Event]:

@@ -43,9 +43,9 @@ One FastAPI application. Open WebUI (trainer-supplied, separate process) is the 
 ## Endpoints
 
 - `GET /healthz`: safe status only.
-- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic` and `hybrid` are real (see Semantic retrieval, Hybrid retrieval); other modes go through `run_pattern` and return `not_implemented`.
+- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic`, `hybrid` and `hybrid-reranked` are real (see Semantic retrieval, Hybrid retrieval, Re-ranking); other modes go through `run_pattern` and return `not_implemented`.
 - `GET /v1/models`: the six model IDs.
-- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic` and `rag-hybrid` are real and streamed; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
+- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic`, `rag-hybrid` and `rag-hybrid-reranked` are real and streamed; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
 
 ## Semantic retrieval (Story 2.3)
 
@@ -75,7 +75,7 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 
 ## Streamed answers and confidence (Story 3.2)
 
-- Shared path: `pipeline.retrieve` (semantic → `run_semantic`, hybrid → `run_hybrid`, else `run_pattern`; real modes are `pipeline.REAL_PATTERNS`; errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
+- Shared path: `pipeline.retrieve` (semantic → `run_semantic`, hybrid → `run_hybrid`, hybrid-reranked → `run_hybrid_reranked`, else `run_pattern`; real modes are `pipeline.REAL_PATTERNS`; errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
 - Event flow: model streams text with inline labels (`[E1]`); first characters are buffered so `INSUFFICIENT_EVIDENCE: <reason>` is never streamed. Each attempt starts with a `DRAFT — checking evidence` notice.
 - `MAX_ATTEMPTS = 2` (initial + one retry, retry prompt carries the plain-language issues). Checks per attempt, in order: `citation_labels` (all cited labels supplied), `claim_cited` (every sentence/bullet cited, text non-empty), `support` (one non-streamed validator call, strict JSON, per claim; skipped when an earlier check already failed). Invalid citations are never rewritten.
 - New `GenerationResult` fields: `confidence` (`high` | `low` | absent), `issues` (`attempt`, `check`, `detail`; all attempts), `attempts` (`attempt`, `status` passed|failed|unjudged, `chars`, `latency_ms`), `draft_answer` (last unpassed text), `low_confidence_reason`.
@@ -97,6 +97,17 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 - Outcomes: `ok`, `no_results` (both routes empty), 503 `retrieval_not_ready` (credentials, either index missing/not ready, empty embeddings; never degrades to semantic-only), 502 `retrieval_upstream_error`.
 - Limitations: rank-only fusion ignores score magnitude; `text` matches any query term (OR), so long questions pull in common words; section numbers match only when present in chunk `text`; standard analyzer, no stemming or synonyms. Fused score ranks only; it does not prove correctness.
 - Diagnostic: the `jq` command in `docs/manual-tests.md` (Story 4.1).
+
+## Re-ranking (Story 4.2)
+
+- `pattern: "hybrid-reranked"` / `rag-hybrid-reranked`, selected explicitly; no fallback to hybrid. Flow: scope check → settings validation (before any Voyage/MongoDB call) → `run_hybrid` with `limit = RERANK_CANDIDATE_LIMIT` → one rerank call → selection. Context, generation, citations, confidence and streaming are the shared path and receive `results` only (never `omitted_candidates`).
+- Settings (defaults): `RERANK_API_BASE_URL` (`https://api.voyageai.com/v1`), `RERANK_API_KEY` (empty), `RERANK_MODEL_NAME` (`rerank-2.5`), `RERANK_REQUEST_TIMEOUT_SECONDS` (30), `RERANK_CANDIDATE_LIMIT` (20), `RERANK_SEND_LIMIT` (10), `RERANK_RETURN_LIMIT` (5). Valid when `1 ≤ RETURN ≤ SEND ≤ CANDIDATE ≤ 20` and timeout ≥ 1; otherwise 503 `retrieval_not_ready` naming the setting. Empty key: 503, no provider or hybrid call.
+- Request: one `POST {base}/rerank` via `httpx`, Bearer key, `{model, query, documents}` (no `top_k`), documents `"{heading}\n{text}"`, no retries. Reply: `data[]` of `{index, relevance_score}` plus optional `usage.total_tokens`; non-empty list, int unique in-range indexes, finite scores, every sent candidate scored. Anything else, a timeout, a connection error or a non-2xx is 502 `retrieval_upstream_error`; no scores are invented.
+- Selection (`rerank.select`, pure): candidates = hybrid fused list; sent = first `SEND` by `fused_rank`, the rest `omitted_reason: "not_sent_to_reranker"` (rerank fields `None`); sent ordered by `relevance_score` desc, ties by `fused_rank`, `rerank_rank` 1-based; final = first `min(limit, RETURN)`, the rest `below_return_limit` (rerank fields kept).
+- Result: `results` ordered by `rerank_rank`, `score == rerank_score`, hybrid fields kept as the "before" evidence; `QueryResult.omitted_candidates` (now `list[RetrievedChunk]`, in `fused_rank` order) holds every cut candidate. New optional `RetrievedChunk` field `omitted_reason` (`rerank_score`/`rerank_rank` added with the contract earlier).
+- Trace: `mode`, `query`, `filters`, `caller_id`, `result_count`, `hybrid` (`embedding`, `semantic`, `keyword`, `fusion`, `contribution`, `unresolved_hits`), `rerank` (`model`, limits, `candidates`/`sent`/`returned`/`omitted_before`/`omitted_after`, `latency_ms`, `usage_tokens` when reported). Outcomes: `ok`, `no_results` (no provider call), 503, 502; hybrid errors pass through.
+- Limitations: candidates outside the top `RERANK_CANDIDATE_LIMIT` are never seen; the re-ranker scores each passage independently against the question; its scores are model-specific, uncalibrated, not comparable with fused scores or across questions, and there is no score cutoff; one extra provider call per request (latency, cost, rate limits), no retry; the answer context cap (5 passages / 12,000 chars) still applies.
+- Diagnostic: the `jq` command in `docs/manual-tests.md` (Story 4.2).
 
 ## Environment notes
 
