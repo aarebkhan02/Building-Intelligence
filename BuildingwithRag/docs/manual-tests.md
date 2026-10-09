@@ -52,16 +52,6 @@ curl -s http://127.0.0.1:8000/v1/query \
 
 Expected (Story 4.2, needs `RERANK_API_KEY`): `"status":"ok"`, up to 3 `results` ordered by `rerank_rank`, `omitted_candidates` for the rest.
 
-### Query — structured
-
-```bash
-curl -s http://127.0.0.1:8000/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is theft?", "pattern": "structured"}'
-```
-
-Expected: `"status":"not_implemented"`, message references `structured`.
-
 ### Query — decomposition
 
 ```bash
@@ -97,7 +87,7 @@ Expected: 422 validation error (question below min_length 1).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-structured", "messages": [{"role": "user", "content": "What is theft?"}]}'
+  -d '{"model": "rag-decomposition", "messages": [{"role": "user", "content": "What is theft?"}]}'
 ```
 
 Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contains `not implemented yet` (`rag-semantic` is real since Story 3.2).
@@ -107,7 +97,7 @@ Expected: `"object":"chat.completion"`, `"finish_reason":"stop"`, content contai
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-structured", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
+  -d '{"model": "rag-decomposition", "messages": [{"role": "user", "content": "What is theft?"}], "stream": true}'
 ```
 
 Expected: SSE `data:` frames with `delta` role then content, ending with `data: [DONE]`.
@@ -127,7 +117,7 @@ Expected: 404 with an OpenAI-style `error` envelope (`Unknown model 'gpt-4'.`).
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "rag-structured", "messages": [{"role": "system", "content": "You are helpful."}]}'
+  -d '{"model": "rag-decomposition", "messages": [{"role": "system", "content": "You are helpful."}]}'
 ```
 
 Expected: 400 with an OpenAI-style `error` envelope (`At least one user message is required.`).
@@ -265,7 +255,7 @@ Prerequisite: Story 3.1 complete; restart the API so it runs the new code (`uv r
    `{"model": "rag-semantic", "stream": false, "messages": [{"role": "user", "content": "What is the punishment for theft under the BNS?"}]}`
    Expected: `choices[0].message.content` starts `DRAFT — checking evidence`, then the answer, then `Evidence check passed — confidence: high` and `Sources:`. Set `"stream": true` to see `data:` chunks ending `data: [DONE]` (Postman shows them after completion).
 4. If `CAPSTONE_API_KEY` is set: add header `Authorization: Bearer <key>` (Authorization tab → Bearer Token). A wrong token returns 401 `invalid_api_key`; unset, no header is needed.
-5. `rag-structured` in the chat body, or `"pattern": "structured"` on `/v1/query`, still returns `not_implemented`.
+5. `rag-decomposition` in the chat body, or `"pattern": "decomposition"` on `/v1/query`, still returns `not_implemented`.
 
 ### Open WebUI
 
@@ -289,7 +279,7 @@ curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json"   -d 
 2. Add `"generate_answer": true` and compare with `"pattern": "semantic"`: sections, order, and answer may differ; neither mode is better in general.
 3. `rag-hybrid` in chat (Open WebUI or `/v1/chat/completions`) streams the same DRAFT/confidence/Sources behavior as `rag-semantic`.
 4. Keyword index missing or not ready: hybrid returns 503 `retrieval_not_ready` naming the keyword-index command; semantic still returns `ok`.
-5. `structured`, `decomposition`, `hyde` still return `not_implemented`.
+5. `decomposition`, `hyde` still return `not_implemented`.
 
 ## Story 4.2 — Hybrid re-ranking
 
@@ -305,4 +295,30 @@ curl -s http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" \
 2. Add `"generate_answer": true` and compare with `"pattern": "hybrid"`: order, sources and answer may differ; neither mode is better in general.
 3. `rag-hybrid-reranked` in chat streams the same DRAFT/confidence/Sources behavior; cited chunks come from `results` only.
 4. `RERANK_API_KEY=` empty and API restarted: `hybrid-reranked` returns 503 `retrieval_not_ready` (chat: OpenAI-style error), while `hybrid` still returns `ok`.
-5. `structured`, `decomposition`, `hyde` still return `not_implemented`.
+5. `decomposition`, `hyde` still return `not_implemented`.
+
+## Story 5.1 — Structured exact retrieval
+
+Postman: `POST http://127.0.0.1:8000/v1/query`, header `Content-Type: application/json`, Body → raw → JSON. Send each body below; check `status`, `trace.signals`, `trace.mongodb_called`, `trace.record`, `results`.
+
+| # | Body | Expected |
+|---|---|---|
+| 1 | `{"question": "What does BNS section 103 say?", "pattern": "structured"}` | `status: ok`; `results[0].section_id: bns:103`; `mongodb_called: true`; `trace.record` has `status`, `source_status_version` |
+| 2 | `{"question": "IPC section 302", "pattern": "structured"}` | `ok`; `ipc:302`; `mongodb_called: true` |
+| 3 | `{"question": "What does BNS section 103 say?", "pattern": "structured", "generate_answer": true}` | as #1, plus `generation.outcome` reported; `generation.citations` only `bns:103` |
+| 4 | `{"question": "What does section 103 say?", "pattern": "structured"}` | `clarification_needed`; `results: []`; `mongodb_called: false`; `trace.signals.reason` names missing act |
+| 5 | `{"question": "IPC section 4", "pattern": "structured"}` | HTTP 200; `not_found`; `results: []`; `mongodb_called: true` |
+| 6 | `{"question": "BNS section 999", "pattern": "structured"}` | same as #5 |
+| 7 | `{"question": "What is the punishment for theft?", "pattern": "structured"}` | `recommendation`; `mongodb_called: false` |
+
+Chat: `POST http://127.0.0.1:8000/v1/chat/completions`, same header, body `{"model": "rag-structured", "messages": [{"role": "user", "content": "What does BNS section 103 say?"}]}` (omit `stream` so Postman shows one JSON reply). `choices[0].message.content` shows DRAFT/confidence/`Sources:`. With content `What does section 103 say?` it is the clarification text only. If `CAPSTONE_API_KEY` is set, add `Authorization: Bearer <key>`.
+
+Optional compact view: in the request's **Scripts → Post-response** tab (Tests in older Postman) paste, then open the Console (View → Show Postman Console) instead of reading the full body:
+
+```js
+const b = pm.response.json();
+console.log(JSON.stringify({status: b.status, signals: b.trace.signals, mongodb_called: b.trace.mongodb_called,
+  record: b.trace.record, results: b.results.map(r => ({section_id: r.section_id, text: r.text.slice(0, 60)}))}));
+```
+
+Offline: `uv run pytest tests/test_structured_retrieval.py tests/test_app.py`

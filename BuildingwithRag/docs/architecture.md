@@ -38,14 +38,14 @@ One FastAPI application. Open WebUI (trainer-supplied, separate process) is the 
 
 ## Shared contracts (extended additively, never replaced)
 
-`QueryRequest`, `QueryResult`, `RetrievedChunk`, `GenerationResult`, `SubquestionEvidence`, `StructuredSignals`, `ChatCompletionRequest`, omitted-candidate items, and MongoDB-schema models (typed only). No parallel top-level `outcome`/`evidence`/`answer`/`confidence`/`citations`/`diagnostics` fields.
+`QueryRequest`, `QueryResult`, `RetrievedChunk`, `GenerationResult`, `SubquestionEvidence`, `StructuredSignals` (Story 5.1: `intent`, `act`, `section_number`, `chapter`, `status`, `reason`), `ChatCompletionRequest`, omitted-candidate items, and MongoDB-schema models (typed only). No parallel top-level `outcome`/`evidence`/`answer`/`confidence`/`citations`/`diagnostics` fields.
 
 ## Endpoints
 
 - `GET /healthz`: safe status only.
-- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic`, `hybrid` and `hybrid-reranked` are real (see Semantic retrieval, Hybrid retrieval, Re-ranking); other modes go through `run_pattern` and return `not_implemented`.
+- `POST /v1/query`: `QueryRequest` → `QueryResult` (owns diagnostics). `semantic`, `hybrid`, `hybrid-reranked` and `structured` are real (see Semantic retrieval, Hybrid retrieval, Re-ranking, Structured exact retrieval); other modes go through `run_pattern` and return `not_implemented`.
 - `GET /v1/models`: the six model IDs.
-- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic`, `rag-hybrid` and `rag-hybrid-reranked` are real and streamed; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
+- `POST /v1/chat/completions`: maps model → same `QueryRequest`; server sets `caller_id` and `generate_answer`; runs the shared `pipeline.retrieve` + `answer_events` path (`rag-semantic`, `rag-hybrid`, `rag-hybrid-reranked` and `rag-structured` are real and streamed — `rag-structured` streams `result.message` as plain content when the result is not `ok`; other modes return the placeholder text); JSON or SSE ending `[DONE]`; OpenAI-style error envelope; Bearer auth when `CAPSTONE_API_KEY` is set. Open WebUI shows the streamed text, DRAFT lines and footer as plain content.
 
 ## Semantic retrieval (Story 2.3)
 
@@ -75,7 +75,7 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 
 ## Streamed answers and confidence (Story 3.2)
 
-- Shared path: `pipeline.retrieve` (semantic → `run_semantic`, hybrid → `run_hybrid`, hybrid-reranked → `run_hybrid_reranked`, else `run_pattern`; real modes are `pipeline.REAL_PATTERNS`; errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
+- Shared path: `pipeline.retrieve` (structured → `run_structured`, semantic → `run_semantic`, hybrid → `run_hybrid`, hybrid-reranked → `run_hybrid_reranked`, else `run_pattern`; real modes are `pipeline.REAL_PATTERNS` (semantic, hybrid, hybrid-reranked, structured; structured yields answer events only when its status is `ok`); errors raise before streaming) then `answer_events` → `answer.answer_stream`. `/v1/query` drains the events into `QueryResult.generation`; chat forwards `text`/`notice` events and renders the footer from the same final `GenerationResult`. One request = one generation/validation operation.
 - Event flow: model streams text with inline labels (`[E1]`); first characters are buffered so `INSUFFICIENT_EVIDENCE: <reason>` is never streamed. Each attempt starts with a `DRAFT — checking evidence` notice.
 - `MAX_ATTEMPTS = 2` (initial + one retry, retry prompt carries the plain-language issues). Checks per attempt, in order: `citation_labels` (all cited labels supplied), `claim_cited` (every sentence/bullet cited, text non-empty), `support` (one non-streamed validator call, strict JSON, per claim; skipped when an earlier check already failed). Invalid citations are never rewritten.
 - New `GenerationResult` fields: `confidence` (`high` | `low` | absent), `issues` (`attempt`, `check`, `detail`; all attempts), `attempts` (`attempt`, `status` passed|failed|unjudged, `chars`, `latency_ms`), `draft_answer` (last unpassed text), `low_confidence_reason`.
@@ -108,6 +108,16 @@ Flow: semantic result → bounded labelled context (`E1`…, max 5 passages / 12
 - Trace: `mode`, `query`, `filters`, `caller_id`, `result_count`, `hybrid` (`embedding`, `semantic`, `keyword`, `fusion`, `contribution`, `unresolved_hits`), `rerank` (`model`, limits, `candidates`/`sent`/`returned`/`omitted_before`/`omitted_after`, `latency_ms`, `usage_tokens` when reported). Outcomes: `ok`, `no_results` (no provider call), 503, 502; hybrid errors pass through.
 - Limitations: candidates outside the top `RERANK_CANDIDATE_LIMIT` are never seen; the re-ranker scores each passage independently against the question; its scores are model-specific, uncalibrated, not comparable with fused scores or across questions, and there is no score cutoff; one extra provider call per request (latency, cost, rate limits), no retry; the answer context cap (5 passages / 12,000 chars) still applies.
 - Diagnostic: the `jq` command in `docs/manual-tests.md` (Story 4.2).
+
+## Structured exact retrieval (Story 5.1)
+
+`pattern: "structured"` (`rag-structured`): rule-based `classify` → one read-only `find_one` on `sections` → `QueryResult`. No LLM extraction, Voyage, vector or keyword index, no router, no fallback to or from other modes.
+
+- **Exact-input contract:** only `StructuredSignals` from the classifier — validated `act` (`BNS_2023`/`IPC_1860`), integer `section_number` (1–999), optional validated `chapter` (1–40 chars of letters, digits, spaces, `.`, `-`; else 422 `unsupported_option`) — plus server filters (`access_level`, optional `status`) may reach MongoDB. Raw question text never does; no operators from request fields. `required_acts` is rejected, `caller_id` follows the semantic rule, `chapter` is accepted (own scope check).
+- Classified: aggregation ("how many", "count", "total number") and filter ("list", "which sections", …) → `recommendation`, no lookup; `section N`/`sec. N`/`s. N`/`§N` plus exactly one act → `ok`; missing act, both acts, several numbers, `103A` or out-of-range → `clarification_needed` (acts never guessed); anything else → `recommendation` (use semantic/hybrid).
+- Outcomes (HTTP 200): `ok` (one `RetrievedChunk`, `chunk_id = section_id`, `score = 1.0` marks an exact match, not a similarity), `not_found` (this corpus has no such record; says nothing about the law), `clarification_needed`, `recommendation`. Missing `MONGODB_URI` (only when a lookup is needed) → 503 `retrieval_not_ready`; MongoDB error → 502 `retrieval_upstream_error`. Trace: `mode`, `signals`, `mongodb_called`, `collection`, `filters`, `caller_id`, `result_count`, `record` (`section_id`, `status`, `source_status_version`) for `ok`.
+- **Answer boundary:** retrieval returns the exact record; explanation only via the existing grounded-answer path when `generate_answer` (always for chat). `not_found`, `clarification_needed` and `recommendation` never call the model (`generation` stays unset; chat streams `message`). `status`/`source_status_version` are source metadata, not current legal applicability.
+- Limitations: integer sections only (no `103A`); no multi-section or cross-act comparison; filter/aggregation recognised but not executed; IPC sections 4, 5, 18, 34, 40, 75, 161–165 are absent from `sections`; phrasing outside the rules is missed; a section over the 12,000-char context cap gives `insufficient_evidence` when answered (direct inspection still returns it).
 
 ## Environment notes
 

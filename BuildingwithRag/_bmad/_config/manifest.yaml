@@ -1,0 +1,54 @@
+installation:
+  version: 6.12.1
+  installDate: 2026-10-08T12:14:51.564Z
+  lastUpdated: 2026-10-08T12:14:51.564Z
+  installShims: false
+modules:
+  - name: core
+    version: 6.12.1
+    installDate: 2026-10-08T12:14:41.884Z
+    lastUpdated: 2026-10-08T12:14:51.488Z
+    source: built-in
+    npmPackage: null
+    repoUrl: null
+  - name: bmm
+    version: 6.12.1
+    installDate: 2026-10-08T12:14:43.395Z
+    lastUpdated: 2026-10-08T12:14:51.495Z
+    source: built-in
+    npmPackage: null
+    repoUrl: null
+  - name: bmb
+    version: v2.2.2
+    installDate: 2026-10-08T12:14:44.341Z
+    lastUpdated: 2026-10-08T12:14:51.520Z
+    source: external
+    npmPackage: bmad-builder
+    repoUrl: https://github.com/bmad-code-org/bmad-builder
+    channel: stable
+    sha: 4a1422274a2acb0fb0ec0511753da6263948f072
+  - name: cis
+    version: v0.3.2
+    installDate: 2026-10-08T12:14:44.613Z
+    lastUpdated: 2026-10-08T12:14:51.545Z
+    source: external
+    npmPackage: bmad-creative-intelligence-suite
+    repoUrl: https://github.com/bmad-code-org/bmad-module-creative-intelligence-suite
+    channel: stable
+    sha: 97298b22fee1c7e482710d3a8414adb5cfccccd9
+  - name: tea
+    version: v1.27.2
+    installDate: 2026-10-08T12:14:50.831Z
+    lastUpdated: 2026-10-08T12:14:51.563Z
+    source: external
+    npmPackage: bmad-method-test-architecture-enterprise
+    repoUrl: https://github.com/bmad-code-org/bmad-method-test-architecture-enterprise
+    channel: stable
+    sha: d99ad29c62697c152e3393351406686d5bcd323c
+ides:
+  - claude-code
+  - codex
+  - cursor
+  - github-copilot
+  - antigravity-cli
+  - antigravity

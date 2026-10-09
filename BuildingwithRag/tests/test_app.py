@@ -16,11 +16,11 @@ def test_healthz_ok():
 def test_query_not_implemented():
     response = client.post(
         "/v1/query",
-        json={"question": "What is BNS section 103?", "pattern": "structured"},
+        json={"question": "What is BNS section 103?", "pattern": "decomposition"},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["pattern"] == "structured"
+    assert body["pattern"] == "decomposition"
     assert body["status"] == "not_implemented"
     assert body["results"] == []
 
@@ -43,7 +43,7 @@ def test_chat_completions_json():
     response = client.post(
         "/v1/chat/completions",
         json={
-            "model": "rag-structured",
+            "model": "rag-decomposition",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": False,
         },
@@ -59,7 +59,7 @@ def test_chat_completions_sse():
         "POST",
         "/v1/chat/completions",
         json={
-            "model": "rag-structured",
+            "model": "rag-decomposition",
             "messages": [{"role": "user", "content": "What is BNS section 103?"}],
             "stream": True,
         },
